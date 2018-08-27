@@ -1,20 +1,20 @@
 <#
 .SYNOPSIS
-Nightly sync for SQL DB to Active Directory.
+Nightly sync for  SQL DB to Active Directory.
 .DESCRIPTION
 Pulls the tables from SQL and matches users in the project to the corresponding groups in AD.
 .NOTES
-Author: David Findley
-Date: 07/10/2018
-Version: v1.0
-Requires PS v4.0 or above and the AD Powershell tools. 
+Author: David Findley & Kory Dumas
+Date: 08/27/2018
+Version: v 3.0
 #>
 
 Import-Module ActiveDirectory -ErrorAction Stop
 
-$server = "SQL-SVR\NAME"
-$database = "DBNAME"
-$query = "SELECT * FROM dbo.ProjectMembers;"
+$server = "sqlsv.domain.local\instance"
+$database = "DB Name"
+$query = "SELECT * FROM dbo.ProjectMembers ORDER BY Name;"
+$activeGroupName = ''
 
 
 $extractFile = @"
@@ -36,31 +36,100 @@ $DataSet = New-Object System.Data.DataSet
 $SqlAdapter.Fill($DataSet)
 $connection.Close()
 
-#Exports to a CSV file. 
+# dump the data to a csv
 $DataSet.Tables[0] | Export-Csv $extractFile 
 
-$DestinationOU = "OU=SomeOUName,DC=Server,DC=local"
-$GroupLines = Import-Csv -Path C:\Users\Projects.csv
 
-#Runs through the script line by line and checks for the group in AD. If doesn't exist, it creates the groups and adds users. If exists, it just adds users.
-Foreach ($GroupLine in $GroupLines) {
-    try {
-        Get-ADGroup $GroupLine.Name
-    }
-    catch {
-        New-ADGroup -Name $GroupLine.Name -SamAccountName $GroupLine.Name -GroupCategory Distribution -GroupScope Universal -DisplayName $GroupLine.Name -Path $DestinationOU
-    }
-    Add-ADGroupMember -Identity $GroupLine.Name -Members $GroupLine.ObjectGUID
-}
+$GroupLine = Import-Csv -Path C:\Users\Projects.csv
 
-#Same principal as above, but it removes the users if they are in a specific project but not in the exported CSV file. 
-$GroupName = "Horizon $($GroupLine.Name)"
-$objectGUID = Get-ADGroupMember -Identity $GroupName | Select-Object -ExpandProperty objectGUID
+Get-Date | Out-File -FilePath C:\Users\Log.txt -Append
+"Member Additions `n" | Out-File -FilePath C:\Users\Log.txt -Append
 
 Foreach ($GroupLine in $GroupLine) {
-    if ($($GroupLine.ObjectGuid) -notcontains $objectGUID) {
-        Remove-ADGroupMember -Identity $GroupName -Members $objectGUID -Confirm:$False
+    TRY {
+    Get-ADGroup "$($GroupLine.Name)"
     }
-    else {
+
+    CATCH {
+    New-ADGroup -Name "$($GroupLine.Name)" -SamAccountName "$($GroupLine.Name)" -GroupCategory Distribution -GroupScope Universal -DisplayName "$($GroupLine.Name)" -Path "OU=OU NAME,DC=SOMECOMPANY,DC=local"
     }
+
+    Add-ADGroupMember -Identity "$($GroupLine.Name)" -Members $($GroupLine.ObjectGuid) -ErrorAction SilentlyContinue
+    $GroupLine.Name| Out-File -FilePath C:\Users\Log.txt -Append
+    "Member Added: $($GroupLine.ObjectGuid) `n" | Out-File -FilePath C:\Users\Log.txt -Append
 }
+
+
+##Populate initial variable and declare deletion section in log
+$GroupLine = Import-Csv -Path C:\Users\Projects.csv
+"Member Deletions `n" | Out-File -FilePath C:\Users\Log.txt -Append
+$MemberList = Get-ADGroupMember -Identity $GroupName | Select-Object -ExpandProperty objectGUID
+[System.Collections.ArrayList]$membersToRemove = $MemberList
+
+Foreach ($GroupLine in $GroupLine) {
+    $GroupName = $GroupLine.Name
+
+    if($activeGroupName -ne $GroupLine.Name)    
+        {
+
+        if ($membersToRemove) 
+            {
+            
+            Remove-ADGroupMember -Identity "$($activeGroupName)" -Members $membersToRemove -Confirm:$False 
+            
+            ##Log Member Deletions
+            $GroupName | Out-File -FilePath C:\Users\Log.txt -Append            
+            "AD Group Members $($MemberList)" | Out-File -FilePath C:\Users\Log.txt -Append
+            "Members to Remove $($membersToRemove)" | Out-File -FilePath C:\Users\Log.txt -Append
+
+            ##Repopulate Variables
+            $MemberList = Get-ADGroupMember -Identity $GroupName | Select-Object -ExpandProperty objectGUID  
+            [System.Collections.ArrayList]$membersToRemove = @($MemberList)
+            
+            $activeGroupName = $GroupLine.Name
+        
+            }
+        else
+            {
+            
+            ##Repopulate Variables
+            $MemberList = Get-ADGroupMember -Identity $GroupName | Select-Object -ExpandProperty objectGUID
+            [System.Collections.ArrayList]$membersToRemove = @($MemberList)
+
+            ##Remove Project Team Member from list of members to remove
+            if($membersToRemove)
+                {
+                $membersToRemove.Remove($GroupLine.ObjectGuid)
+                }
+            else
+                {
+                }
+
+            $activeGroupName = $GroupLine.Name
+
+            }
+        }
+    else
+        {
+
+        ##Remove Project Team Member from list of members to remove
+        if($membersToRemove)
+            {
+            $membersToRemove.Remove($GroupLine.ObjectGuid)
+            }
+        else
+            {
+            }
+
+        }
+    
+}
+
+$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://exchsvr/powershell 
+Import-PSSession $Session -AllowClobber
+
+$GroupLine | ForEach-Object {
+Enable-DistributionGroup -Identity $_.Name -ErrorAction SilentlyContinue
+}
+
+Remove-PSSession $Session
