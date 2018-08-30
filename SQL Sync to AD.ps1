@@ -125,6 +125,29 @@ Foreach ($GroupLine in $GroupLine) {
     
 }
 
+## Removing groups if they don't exist in db
+
+##Populate initial variable and declare deletion section in log
+$GroupLine = Import-Csv -Path C:\Projects.csv
+"Group Deletions `n" | Out-File -FilePath C:\log.txt -Append
+$GroupList = Get-ADGroup -Filter * -Properties name, groupcategory -SearchBase "OU=OU NAME,DC=SOMECOMPANY,DC=local" | Select-Object name, groupcategory | Where-Object groupcategory -eq "Distribution"
+[System.Collections.ArrayList]$GroupsToRemove = $GroupList.Name
+
+
+Foreach ($Groups in $GroupLine) {
+
+    $GroupsToRemove.Remove($Groups.Name)
+  
+}
+
+Foreach ($Group in $GroupsToRemove){
+
+Remove-ADGroup -Identity $Group -Confirm:$False
+$Group | Out-File -FilePath C:\log.txt -Append
+
+}
+
+
 $Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri http://exchsvr/powershell 
 Import-PSSession $Session -AllowClobber
 
